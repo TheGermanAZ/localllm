@@ -1,7 +1,11 @@
 import modal
 import subprocess
 
-# Define the container image with vLLM and dependencies
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+MODEL_DIR = "/models"
+
+volume = modal.Volume.from_name("model-cache", create_if_missing=True)
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
@@ -14,23 +18,25 @@ image = (
 
 app = modal.App("llama-inference", image=image)
 
-MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
-
-# Persistent volume to cache model weights across cold starts
-volume = modal.Volume.from_name("model-cache", create_if_missing=True)
 
 @app.function(
-    gpu="A10G",  # 24GB VRAM, plenty for an 8B model
-    volumes={"/models": volume},
+    gpu="A10G",
+    volumes={MODEL_DIR: volume},
     timeout=600,
 )
-@modal.web_server(port=8000)
+@modal.web_server(port=8000, startup_timeout=300)
 def serve():
-    """Spawn a vLLM server serving Llama 3.1 8B."""
+    """Download model if needed, then start vLLM server."""
+    import os
+    model_path = f"{MODEL_DIR}/{MODEL_NAME}"
+    if not os.path.exists(model_path):
+        from huggingface_hub import snapshot_download
+        snapshot_download(MODEL_NAME, local_dir=model_path)
+        volume.commit()
+
     cmd = [
         "python", "-m", "vllm.entrypoints.openai.api_server",
-        "--model", MODEL_NAME,
-        "--download-dir", "/models",
+        "--model", model_path,
         "--host", "0.0.0.0",
         "--port", "8000",
     ]
